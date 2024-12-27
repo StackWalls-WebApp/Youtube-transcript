@@ -1,0 +1,5 @@
+Flask==2.0.1
+Werkzeug==2.0.1
+selenium==4.1.0
+gunicorn
+Flask-cors
