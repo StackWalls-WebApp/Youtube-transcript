@@ -1,8 +1,8 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from selenium.webdriver.chrome.service import Service
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -25,7 +25,6 @@ def load_user_agents(file_path):
     try:
         with open(file_path, 'r') as f:
             user_agents = f.readlines()
-        # Strip newlines or any trailing whitespace
         return [ua.strip() for ua in user_agents if ua.strip()]
     except FileNotFoundError:
         logger.error(f"User agents file not found: {file_path}")
@@ -63,7 +62,7 @@ def get_transcript():
         # Initialize Chrome options for incognito mode and anti-detection measures
         chrome_options = Options()
         chrome_options.add_argument("--incognito")
-        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--headless")  # Uncomment for headless mode
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-gpu')
@@ -90,10 +89,13 @@ def get_transcript():
         # Initialize the WebDriver
         try:
             logger.info('Initializing Chrome WebDriver with anti-detection measures')
-            driver = webdriver.Chrome(executable_path='/usr/local/bin/chromedriver', options=chrome_options)
+            service = Service("/usr/local/bin/chromedriver")
+            driver = webdriver.Chrome(service=service, options=chrome_options)
 
             # Overriding navigator.webdriver to avoid detection
-            driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            driver.execute_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
 
         except Exception as e:
             logger.exception('Error initializing WebDriver')
@@ -132,8 +134,11 @@ def get_transcript():
                 (By.CSS_SELECTOR, "div.ng-transcript")))
 
             # Find the inner scrollable div
+            # NOTE: Adjusted to match the style from your Inspect snippet: style="height: 288px; overflow-y: auto;"
             logger.info('Finding inner scrollable div')
-            scrollable_div = transcript_container.find_element(By.CSS_SELECTOR, "div[style*='overflow-y: auto']")
+            scrollable_div = transcript_container.find_element(
+                By.CSS_SELECTOR, "div[style*='overflow-y: auto']"
+            )
 
             # Initialize a list to store transcript texts in order
             transcript_texts = []
@@ -141,10 +146,7 @@ def get_transcript():
             # Scroll to the top of the scrollable div
             logger.info('Scrolling to the top of the transcript')
             driver.execute_script("arguments[0].scrollTop = 0;", scrollable_div)
-
-            # Wait for initial content to load
-            logger.info('Waiting for initial content to load')
-            time.sleep(2)
+            time.sleep(2)  # Wait for initial content to load
 
             # Get the total scroll height
             total_height = driver.execute_script("return arguments[0].scrollHeight", scrollable_div)
@@ -153,42 +155,58 @@ def get_transcript():
 
             # Initialize scroll position
             scroll_position = 0
-            scroll_increment = random.randint(6500, 7000)  # Randomize scroll increment
+            # Use a smaller increment so we don't skip items (e.g. 1000 px)
+            scroll_increment = 1500
             last_position = -1
 
-            while scroll_position < total_height:
-                # Scroll down by random increment
-                driver.execute_script("arguments[0].scrollTop = arguments[1];", scrollable_div, scroll_position)
-                logger.debug(f'Scrolled to position: {scroll_position}')
-                time.sleep(random.uniform(0.5, 1.0))  # Randomize scroll wait time
+            # Scroll loop
+            while True:
+                driver.execute_script(
+                    "arguments[0].scrollTop = arguments[1];", 
+                    scrollable_div, 
+                    scroll_position
+                )
+                time.sleep(random.uniform(1.0, 2.0))  # brief wait
 
-                # Extract visible transcript items at current scroll position
-                transcript_divs = scrollable_div.find_elements(By.CSS_SELECTOR, "div.ng-transcript-item-text")
-                logger.debug(f'Found {len(transcript_divs)} transcript items at current position')
+                # Grab visible transcript text
+                transcript_divs = scrollable_div.find_elements(
+                    By.CSS_SELECTOR, 
+                    "div.ng-transcript-item-text div.text-container"
+                )
                 for div in transcript_divs:
                     text = div.text.strip()
                     if text and text not in transcript_texts:
                         transcript_texts.append(text)
 
-                # Update scroll position
+                # Increase scroll position
                 scroll_position += scroll_increment
-
-                # Update total_height in case it changes due to dynamic loading
-                new_total_height = driver.execute_script("return arguments[0].scrollHeight", scrollable_div)
-                if new_total_height != total_height:
-                    logger.info(f'Updated total scroll height: {new_total_height}')
-                    total_height = new_total_height
-
-                # Check if we've reached the bottom
-                if scroll_position >= total_height or scroll_position == last_position:
-                    logger.info('Reached the bottom of the transcript')
+                if scroll_position >= total_height:
+                    logger.info('Reached or exceeded the bottom of the transcript')
                     break
 
+                # Check if total_height has changed (e.g. dynamic loading)
+                new_total_height = driver.execute_script(
+                    "return arguments[0].scrollHeight", scrollable_div
+                )
+                if new_total_height > total_height:
+                    total_height = new_total_height
+                else:
+                    # If the scroll position didn't change, we've reached the bottom
+                    if scroll_position == last_position:
+                        logger.info('No further scroll movement detected; bottom reached.')
+                        break
                 last_position = scroll_position
 
-            # Ensure all elements are fully loaded
-            logger.info('Final wait to ensure all content is loaded')
-            time.sleep(random.uniform(2, 5))
+            # Final pass at the bottom to ensure all items loaded
+            logger.info('Final pass to capture any remaining transcript items')
+            transcript_divs = scrollable_div.find_elements(
+                By.CSS_SELECTOR, 
+                "div.ng-transcript-item-text div.text-container"
+            )
+            for div in transcript_divs:
+                text = div.text.strip()
+                if text and text not in transcript_texts:
+                    transcript_texts.append(text)
 
             # Combine all transcript texts in order
             full_transcript = "\n".join(transcript_texts)
